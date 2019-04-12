@@ -1632,6 +1632,76 @@ public interface IIntConstraintFactory extends ISelf<Model> {
     }
 
     /**
+     * Creates a network flow constraint.
+     *
+     * The array arcs[][] represents the graph. An arc i is as follow : arcs[i][0]
+     * represents the source of the arc and arcs[i][1] represents the sink of the arc. All arcs are considered oriented.
+     * The array balance[] represents the balance at each node, which the quantity of flow that the node creates (if balance
+     * is positive) or absorbs (if balance is negative). The flow[] array represents the flow going through each arc.
+     *
+     * This constraint ensures that at each node, the sum of the flow exiting minus the sum of the flow entering the node
+     * is equal to the balance of the node.
+     *
+     * @param arcs       arcs composing the graph
+     * @param balance      balance of each node
+     * @param flow integer variables representing the flow through each arc
+     */
+    default Constraint networkFlow(int[][] arcs, int[] balance, IntVar[] flow) {
+        int[] weights = new int[balance.length];
+        IntVar cost = flow[0].getModel().intVar(0);
+        return networkFlow(arcs, balance, weights, flow, cost);
+    }
+
+    /**
+     * Creates a network flow constraint.
+     *
+     * The array arcs[][] represents the graph. An arc i is as follow : arcs[i][0]
+     * represents the source of the arc and arcs[i][1] represents the sink of the arc. All arcs are considered oriented.
+     * The array balance[] represents the balance at each node, which the quantity of flow that the node creates (if balance
+     * is positive) or absorbs (if balance is negative). The flow[] array represents the flow going through each arc.
+     * The weights[] array represents the unit cost of flow going through the corresponding arc. Finally, the cost variable
+     * represents the total cost of the network, which is the weighted sum of the flow by their corresponding weight.
+     *
+     * This constraint ensures that at each node, the sum of the flow exiting minus the sum of the flow entering the node
+     * is equal to the balance of the node. The cost variable is equal to the weighted sum : flow*weights
+     *
+     * @param arcs       arcs composing the graph
+     * @param balance      balance of each node
+     * @param weights       the weight of the flow going through an arc
+     * @param flow integer variables representing the flow through each arc
+     * @param cost the total cost of the network
+     */
+    default Constraint networkFlow(int[][] arcs, int[] balance, int[] weights, IntVar[] flow, IntVar cost) {
+        if(arcs.length != flow.length) {
+            throw new SolverException("arcs and flow should have the same length !");
+        } else if(arcs.length != weights.length) {
+            throw new SolverException("arcs and weights should have same length !");
+        }
+
+        TIntArrayList[] nodes = new TIntArrayList[balance.length];
+        for(int i = 0; i<arcs.length; i++) {
+            TIntArrayList node1 = nodes[arcs[i][0]];
+            TIntArrayList node2 = nodes[arcs[i][1]];
+            if(node1 == null) {
+                node1 = new TIntArrayList();
+            }
+            if(node2 == null) {
+                node2 = new TIntArrayList();
+            }
+            node1.add(-i);
+            node2.add(i);
+        }
+        for(int j = 0; j<nodes.length; j++) {
+            if(nodes[j] != null) {
+                IntVar[] localFlow = Arrays.stream(nodes[j].toArray()).mapToObj(i -> (i<0 ? flow[-i].neg().intVar() : flow[i])).toArray(IntVar[]::new);
+                sum(localFlow, "=", balance[j]).post();
+            }
+        }
+
+        return scalar(flow, weights, "=", cost);
+    }
+
+    /**
      * Creates an nValue constraint.
      * Let N be the number of distinct values assigned to the variables of the vars collection.
      * Enforce condition N = nValues to hold.
