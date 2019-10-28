@@ -9,6 +9,7 @@
  */
 package org.chocosolver.solver.constraints.nary;
 
+import gnu.trove.list.array.TIntArrayList;
 import org.chocosolver.solver.constraints.Propagator;
 import org.chocosolver.solver.constraints.PropagatorPriority;
 import org.chocosolver.solver.exception.ContradictionException;
@@ -18,9 +19,7 @@ import org.chocosolver.solver.variables.events.IntEventType;
 import org.chocosolver.solver.variables.events.PropagatorEventType;
 import org.chocosolver.util.ESat;
 import org.chocosolver.util.objects.graphs.UndirectedGraph;
-import org.chocosolver.util.objects.setDataStructures.ISet;
 import org.chocosolver.util.objects.setDataStructures.ISetIterator;
-import org.chocosolver.util.objects.setDataStructures.SetFactory;
 import org.chocosolver.util.objects.setDataStructures.SetType;
 import org.chocosolver.util.tools.ArrayUtils;
 
@@ -36,8 +35,10 @@ public class PropDiffNImproved extends Propagator<IntVar> {
 
     private int n;
     private UndirectedGraph overlappingBoxes;
-    private ISet boxesToCompute;
+//    private ISet boxesToCompute;
+    private TIntArrayList boxesToCompute;
     private boolean fast;
+    private TIntArrayList pruneList;
 
     //***********************************************************************************
     // CONSTRUCTOR
@@ -51,7 +52,8 @@ public class PropDiffNImproved extends Propagator<IntVar> {
             throw new SolverException("PropDiffN variable arrays do not have same size");
         }
         overlappingBoxes = new UndirectedGraph(model, n, SetType.LINKED_LIST, true);
-        boxesToCompute = SetFactory.makeStoredSet(SetType.LINKED_LIST, 0, model);
+//        boxesToCompute = SetFactory.makeStoredSet(SetType.LINKED_LIST, 0, model);
+        boxesToCompute = new TIntArrayList(n);
         for (int i = 0; i < n; i++) {
             for (int j = i + 1; j < n; j++) {
                 if (mayOverlap(i, j)) {
@@ -59,6 +61,7 @@ public class PropDiffNImproved extends Propagator<IntVar> {
                 }
             }
         }
+        pruneList = new TIntArrayList(n);
     }
 
     //***********************************************************************************
@@ -75,6 +78,11 @@ public class PropDiffNImproved extends Propagator<IntVar> {
 
     @Override
     public void propagate(int varIdx, int mask) throws ContradictionException {
+        prop(varIdx);
+        forcePropagate(PropagatorEventType.CUSTOM_PROPAGATION);
+    }
+
+    private void prop(int varIdx) {
         int v = varIdx % n;
         ISetIterator iter = overlappingBoxes.getNeighOf(v).iterator();
         while (iter.hasNext()) {
@@ -86,16 +94,17 @@ public class PropDiffNImproved extends Propagator<IntVar> {
         if (!boxesToCompute.contains(v)) {
             boxesToCompute.add(v);
         }
-        forcePropagate(PropagatorEventType.CUSTOM_PROPAGATION);
     }
 
     @Override
     public void propagate(int evtmask) throws ContradictionException {
-        boolean hasFiltered;
-        do {
+        boolean hasFiltered = true;
+        while(hasFiltered) {
             hasFiltered = false;
             if(PropagatorEventType.isFullPropagation(evtmask)) {
+                boxesToCompute.clear();
                 for (int i = 0; i < n; i++) {
+                    boxesToCompute.add(i);
                     for (int j = i + 1; j < n; j++) {
                         if (mayOverlap(i, j)) {
                             overlappingBoxes.addEdge(i, j);
@@ -108,29 +117,23 @@ public class PropDiffNImproved extends Propagator<IntVar> {
                     }
                 }
             }
-            ISetIterator iter = boxesToCompute.iterator();
-            while (iter.hasNext()) {
-                int i = iter.nextInt();
+            pruneList.clear();
+//            ISetIterator iter = boxesToCompute.iterator();
+//            while (iter.hasNext()) {
+//                int i = iter.nextInt();
+//                energyCheck(i);
+//                hasFiltered |= prune(i);
+//            }
+            for(int k = 0; k<boxesToCompute.size(); k++)  {
+                int i = boxesToCompute.getQuick(k);
                 energyCheck(i);
-                boolean hasFilteredI = prune(i);
-                if(hasFilteredI) {
-                    hasFiltered = true;
-                    ISetIterator iterI = overlappingBoxes.getNeighOf(i).iterator();
-                    while (iterI.hasNext()) {
-                        int v = iterI.nextInt();
-                        if (!mayOverlap(i, v)) {
-                            overlappingBoxes.removeEdge(i, v);
-                        }
-                    }
-                }
+                hasFiltered |= prune(i);
             }
             boxesToCompute.clear();
-            if(hasFiltered) {
-                for (int i = 0; i < n; i++) {
-                    boxesToCompute.add(i);
-                }
+            for(int k = 0; k< pruneList.size(); k++) {
+                prop(pruneList.getQuick(k));
             }
-        } while(hasFiltered);
+        }
     }
 
     private boolean prune(int j) throws ContradictionException {
@@ -208,14 +211,34 @@ public class PropDiffNImproved extends Propagator<IntVar> {
         int e_j = vars[j + offSet].getLB() + vars[j + 2 * n + offSet].getLB();
         if (S_i < e_i || S_j < e_j) {
             if (e_j > S_i) {
-                hasFiltered = vars[j + offSet].updateLowerBound(e_i, this);
-                hasFiltered |= vars[i + offSet].updateUpperBound(S_j - vars[i + 2 * n + offSet].getLB(), this);
-                hasFiltered |= vars[i + offSet + 2 * n].updateUpperBound(S_j - vars[i + offSet].getLB(), this);
+                if(vars[j + offSet].updateLowerBound(e_i, this)) {
+                    if(!pruneList.contains(j)) {
+                        pruneList.add(j);
+                    }
+                    hasFiltered = true;
+                }
+                if(vars[i + offSet].updateUpperBound(S_j - vars[i + 2 * n + offSet].getLB(), this)
+                    || vars[i + offSet + 2 * n].updateUpperBound(S_j - vars[i + offSet].getLB(), this)) {
+                    if(!pruneList.contains(i)) {
+                        pruneList.add(i);
+                    }
+                    hasFiltered = true;
+                }
             }
             if (S_j < e_i) {
-                hasFiltered |= vars[i + offSet].updateLowerBound(e_j, this);
-                hasFiltered |= vars[j + offSet].updateUpperBound(S_i - vars[j + 2 * n + offSet].getLB(), this);
-                hasFiltered |= vars[j + offSet + 2 * n].updateUpperBound(S_i - vars[j + offSet].getLB(), this);
+                if(vars[i + offSet].updateLowerBound(e_j, this)) {
+                    if(!pruneList.contains(i)) {
+                        pruneList.add(i);
+                    }
+                    hasFiltered = true;
+                }
+                if(vars[j + offSet].updateUpperBound(S_i - vars[j + 2 * n + offSet].getLB(), this)
+                        || vars[j + offSet + 2 * n].updateUpperBound(S_i - vars[j + offSet].getLB(), this)) {
+                    if(!pruneList.contains(j)) {
+                        pruneList.add(j);
+                    }
+                    hasFiltered = true;
+                }
             }
         }
         return hasFiltered;
