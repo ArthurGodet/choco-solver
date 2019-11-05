@@ -35,7 +35,6 @@ public class PropDiffNImproved extends Propagator<IntVar> {
 
     private int n;
     private UndirectedGraph overlappingBoxes;
-//    private ISet boxesToCompute;
     private TIntArrayList boxesToCompute;
     private boolean fast;
     private TIntArrayList pruneList;
@@ -52,7 +51,6 @@ public class PropDiffNImproved extends Propagator<IntVar> {
             throw new SolverException("PropDiffN variable arrays do not have same size");
         }
         overlappingBoxes = new UndirectedGraph(model, n, SetType.LINKED_LIST, true);
-//        boxesToCompute = SetFactory.makeStoredSet(SetType.LINKED_LIST, 0, model);
         boxesToCompute = new TIntArrayList(n);
         for (int i = 0; i < n; i++) {
             for (int j = i + 1; j < n; j++) {
@@ -118,12 +116,6 @@ public class PropDiffNImproved extends Propagator<IntVar> {
                 }
             }
             pruneList.clear();
-//            ISetIterator iter = boxesToCompute.iterator();
-//            while (iter.hasNext()) {
-//                int i = iter.nextInt();
-//                energyCheck(i);
-//                hasFiltered |= prune(i);
-//            }
             for(int k = 0; k<boxesToCompute.size(); k++)  {
                 int i = boxesToCompute.getQuick(k);
                 energyCheck(i);
@@ -194,46 +186,46 @@ public class PropDiffNImproved extends Propagator<IntVar> {
 
     private boolean doOverlap(int i, int j, boolean hori) {
         int offSet = hori ? 0 : n;
-        int S_i = vars[i + offSet].getUB();
+        int s_i = vars[i + offSet].getUB();
         int e_i = vars[i + offSet].getLB() + vars[i + 2 * n + offSet].getLB();
-        int S_j = vars[j + offSet].getUB();
+        int s_j = vars[j + offSet].getUB();
         int e_j = vars[j + offSet].getLB() + vars[j + 2 * n + offSet].getLB();
-        return (S_i < e_i && e_j > S_i && S_j < e_i)
-                || (S_j < e_j && e_i > S_j && S_i < e_j);
+        return (s_i < e_i && e_j > s_i && s_j < e_i)
+                || (s_j < e_j && e_i > s_j && s_i < e_j);
     }
 
     private boolean filter(int i, int j, boolean hori) throws ContradictionException {
         boolean hasFiltered = false;
         int offSet = hori ? 0 : n;
-        int S_i = vars[i + offSet].getUB();
+        int s_i = vars[i + offSet].getUB();
         int e_i = vars[i + offSet].getLB() + vars[i + 2 * n + offSet].getLB();
-        int S_j = vars[j + offSet].getUB();
+        int s_j = vars[j + offSet].getUB();
         int e_j = vars[j + offSet].getLB() + vars[j + 2 * n + offSet].getLB();
-        if (S_i < e_i || S_j < e_j) {
-            if (e_j > S_i) {
+        if (s_i < e_i || s_j < e_j) {
+            if (e_j > s_i) {
                 if(vars[j + offSet].updateLowerBound(e_i, this)) {
                     if(!pruneList.contains(j)) {
                         pruneList.add(j);
                     }
                     hasFiltered = true;
                 }
-                if(vars[i + offSet].updateUpperBound(S_j - vars[i + 2 * n + offSet].getLB(), this)
-                    || vars[i + offSet + 2 * n].updateUpperBound(S_j - vars[i + offSet].getLB(), this)) {
+                if(vars[i + offSet].updateUpperBound(s_j - vars[i + 2 * n + offSet].getLB(), this)
+                    || vars[i + offSet + 2 * n].updateUpperBound(s_j - vars[i + offSet].getLB(), this)) {
                     if(!pruneList.contains(i)) {
                         pruneList.add(i);
                     }
                     hasFiltered = true;
                 }
             }
-            if (S_j < e_i) {
+            if (s_j < e_i) {
                 if(vars[i + offSet].updateLowerBound(e_j, this)) {
                     if(!pruneList.contains(i)) {
                         pruneList.add(i);
                     }
                     hasFiltered = true;
                 }
-                if(vars[j + offSet].updateUpperBound(S_i - vars[j + 2 * n + offSet].getLB(), this)
-                        || vars[j + offSet + 2 * n].updateUpperBound(S_i - vars[j + offSet].getLB(), this)) {
+                if(vars[j + offSet].updateUpperBound(s_i - vars[j + 2 * n + offSet].getLB(), this)
+                        || vars[j + offSet + 2 * n].updateUpperBound(s_i - vars[j + offSet].getLB(), this)) {
                     if(!pruneList.contains(j)) {
                         pruneList.add(j);
                     }

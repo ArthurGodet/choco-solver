@@ -20,6 +20,7 @@ import org.chocosolver.solver.exception.ContradictionException;
 import org.chocosolver.solver.exception.SolverException;
 import org.chocosolver.solver.variables.IntVar;
 import org.chocosolver.solver.variables.events.IntEventType;
+import org.chocosolver.solver.variables.events.PropagatorEventType;
 import org.chocosolver.util.ESat;
 import org.chocosolver.util.tools.ArrayUtils;
 
@@ -43,6 +44,7 @@ public class PropSweepDiffN extends Propagator<IntVar> {
 
     private IStateInt[] witnessesLB; // TODO : may not be necessary to be trailed
     private IStateInt[] witnessesUB; // TODO : may not be necessary to be trailed
+    private IStateInt[] targetSourceStatus; // 2 = target & source, 1 = source, 0 = neither
     private boolean find;
     private int xFind;
     private int xWit;
@@ -56,7 +58,7 @@ public class PropSweepDiffN extends Propagator<IntVar> {
     //***********************************************************************************
 
     public PropSweepDiffN(IntVar[] x, IntVar[] y, IntVar[] dx, IntVar[] dy, boolean fast) {
-        super(ArrayUtils.append(x, y, dx, dy), PropagatorPriority.LINEAR, false);
+        super(ArrayUtils.append(x, y, dx, dy), PropagatorPriority.QUADRATIC, false);
         this.fast = fast;
         n = x.length;
         this.x = x;
@@ -68,15 +70,17 @@ public class PropSweepDiffN extends Propagator<IntVar> {
         }
         for(int i = 0; i<n; i++) { // TODO : temporary
             if(!dx[i].isInstantiated() || !dy[i].isInstantiated()) {
-                throw new SolverException("PropagDiffN only accepts instantiated width and height");
+                throw new SolverException("PropSweepDiffN only accepts instantiated width and height");
             }
         }
 
         this.witnessesLB = new IStateInt[n];
         this.witnessesUB = new IStateInt[n];
+        this.targetSourceStatus = new IStateInt[n];
         for(int i = 0; i<n; i++) {
             witnessesLB[i] = this.getModel().getEnvironment().makeInt(y[i].getLB());
             witnessesUB[i] = this.getModel().getEnvironment().makeInt(y[i].getLB());
+            targetSourceStatus[i] = this.getModel().getEnvironment().makeInt(2);
         }
 
         this.rand = new Random(0);
@@ -94,12 +98,12 @@ public class PropSweepDiffN extends Propagator<IntVar> {
             if (fast) {
                 return IntEventType.instantiation();
             }
-            return IntEventType.combine(IntEventType.INCLOW, IntEventType.INSTANTIATE);
+            return IntEventType.boundAndInst();
         }
         return IntEventType.VOID.getMask();
     }
 
-    private void prop(int i, boolean lb) throws ContradictionException {
+    private boolean prop(int i, boolean lb) throws ContradictionException {
         boolean checkIfInForbiddenRegions = false;
         int value = (lb ? x[i].getLB() : x[i].getUB());
         int witness = (lb ? witnessesLB[i].get() : witnessesUB[i].get());
@@ -117,26 +121,74 @@ public class PropSweepDiffN extends Propagator<IntVar> {
             } else {
                 if(lb) {
                     witnessesLB[i].set(xWit);
-                    x[i].updateLowerBound(xFind, this);
+                    return x[i].updateLowerBound(xFind, this);
                 } else {
                     witnessesUB[i].set(xWit);
-                    x[i].updateUpperBound(xFind, this);
+                    return x[i].updateUpperBound(xFind, this);
                 }
             }
         }
+        return false;
+    }
+
+    private boolean doOverlap(int i, int j, boolean hori) {
+        int offSet = hori ? 0 : n;
+        int S_i = vars[i + offSet].getUB();
+        int e_i = vars[i + offSet].getLB() + vars[i + 2 * n + offSet].getLB();
+        int S_j = vars[j + offSet].getUB();
+        int e_j = vars[j + offSet].getLB() + vars[j + 2 * n + offSet].getLB();
+        return (S_i < e_i && e_j > S_i && S_j < e_i)
+            || (S_j < e_j && e_i > S_j && S_i < e_j);
     }
 
     @Override
     public void propagate(int evtmask) throws ContradictionException {
+        boolean hasFiltered = true;
+        while(hasFiltered) {
+            hasFiltered = false;
+            for(int i = 0; i<n; i++) {
+                if(targetSourceStatus[i].get() == 2) {
+                    hasFiltered |= prop(i, true);
+                    hasFiltered |= prop(i, false);
+                }
+                if(boxInstantiated(i)) {
+                    for(int j = i+1; j<n; j++) {
+                        if(j != i && boxInstantiated(j) && doOverlap(i, j, true) && doOverlap(i, j, false)) {
+                            fails();
+                        }
+                    }
+                    this.targetSourceStatus[i].set(1);
+                }
+            }
+            updateSourceStatus();
+        }
+    }
+
+    private boolean disjoint(int i, int B_x_m, int B_x_p, int B_y_m, int B_y_p) {
+        int x_m = x[i].getLB();
+        int x_p = x[i].getUB() + dx[i].getLB() - 1;
+        int y_m = y[i].getLB();
+        int y_p = y[i].getUB() + dy[i].getLB() -1;
+
+        return B_x_m > x_p || B_x_p < x_m || B_y_m > y_p || B_y_p < y_m;
+    }
+
+    private void updateSourceStatus() {
+        int B_x_m = Integer.MAX_VALUE;
+        int B_x_p = -Integer.MAX_VALUE;
+        int B_y_m = Integer.MAX_VALUE;
+        int B_y_p = -Integer.MAX_VALUE;
         for(int i = 0; i<n; i++) {
-            if(!x[i].isInstantiated()) {
-                prop(i, true);
-                prop(i, false);
+            if(targetSourceStatus[i].get() == 2) {
+                B_x_m = Math.min(B_x_m, x[i].getLB());
+                B_x_p = Math.max(B_x_p, x[i].getUB() + dx[i].getLB() - 1);
+                B_y_m = Math.min(B_y_m, y[i].getLB());
+                B_y_p = Math.max(B_y_p, y[i].getUB() + dy[i].getLB() - 1);
             }
         }
-        if(isCompletelyInstantiated()) { // TODO : should not be useful ! We need to understand why is it not ok --> because of the if on x[i].isInstantiated()
-            if(isEntailed().equals(ESat.FALSE)) {
-                fails();
+        for(int i = 0; i<n; i++) {
+            if(targetSourceStatus[i].get() == 1 && disjoint(i, B_x_m, B_x_p, B_y_m, B_y_p)) {
+                targetSourceStatus[i].set(0);
             }
         }
     }
@@ -147,6 +199,7 @@ public class PropSweepDiffN extends Propagator<IntVar> {
         int ry_m = y[j].getUB()-dy[i].getLB()+1;
         int ry_p = y[j].getLB()+dy[j].getLB()-1;
         boolean test = (down ? xPrime < x[i].getLB() : xPrime > x[i].getUB());
+//        System.out.println("R["+i+":"+j+"] = ("+rx_m+".."+rx_p+","+ry_m+".."+ry_p+")");
 
         return test && rx_m <= rx_p && ry_m <= ry_p;
     }
@@ -159,9 +212,6 @@ public class PropSweepDiffN extends Propagator<IntVar> {
 
         return rx_m <= vx && vx <= rx_p && ry_m <= vy && vy <= ry_p;
     }
-
-    // TODO : et finir de débugger ce propagateur pour que tout fonctionne correctement
-    // TODO : COMPRENDRE POURQUOI LE SWEEP FILTRE MOINS BIEN QUE L'EXISTANT ALORS QUE JACOP LAISSE SUPPOSER LE CONTRAIRE
 
     private int getRandValue(IntVar y) {
         int idx = rand.nextInt(y.getDomainSize());
@@ -186,7 +236,7 @@ public class PropSweepDiffN extends Propagator<IntVar> {
     private void findMinimum(int i) {
         Qevent.clear();
         for(int j = 0; j<n; j++) {
-            if(j != i) {
+            if(j != i && targetSourceStatus[j].get() >= 1) {
                 if(getForbiddenRegion(i, j, x[i].getLB()-1, true)) {
                     Qevent.add(new Event(true, Math.max(x[j].getUB() - dx[i].getLB() + 1, x[i].getLB()), i, j));
                     if(x[j].getLB()+dx[j].getLB() <= x[i].getUB()) {
@@ -196,6 +246,7 @@ public class PropSweepDiffN extends Propagator<IntVar> {
             }
         }
         Qevent.sort(Comparator.comparingInt(e -> e.pos));
+        System.out.println(Qevent);
         if(Qevent.isEmpty() || Qevent.getFirst().pos > x[i].getLB()) {
             xFind = x[i].getLB();
             xWit = getRandValue(y[i]);
@@ -230,7 +281,7 @@ public class PropSweepDiffN extends Propagator<IntVar> {
     private void findMaximum(int i) {
         Qevent.clear();
         for(int j = 0; j<n; j++) {
-            if(j != i) {
+            if(j != i && targetSourceStatus[j].get() >= 1) {
                 if(getForbiddenRegion(i, j, x[i].getUB()+1, false)) {
                     Qevent.add(new Event(true, Math.min(x[j].getLB() + dx[j].getLB() - 1, x[i].getUB()), i, j));
                     if(x[j].getUB()-dx[i].getLB() >= x[i].getLB()) {
