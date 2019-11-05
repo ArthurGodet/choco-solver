@@ -21,7 +21,6 @@ import org.chocosolver.solver.exception.ContradictionException;
 import org.chocosolver.solver.exception.SolverException;
 import org.chocosolver.solver.variables.IntVar;
 import org.chocosolver.solver.variables.events.IntEventType;
-import org.chocosolver.solver.variables.events.PropagatorEventType;
 import org.chocosolver.util.ESat;
 import org.chocosolver.util.tools.ArrayUtils;
 
@@ -50,7 +49,8 @@ public class PropSweepDiffN extends Propagator<IntVar> {
     private int xFind;
     private int xWit;
     private Random rand;
-    private LinkedList<Event> Qevent;
+    private Event[] Qevent;
+    private int QeventSize;
     private int[] Pstatus;
     private int size;
     private TIntArrayList list;
@@ -86,7 +86,11 @@ public class PropSweepDiffN extends Propagator<IntVar> {
         }
 
         this.rand = new Random(0);
-        Qevent = new LinkedList<>();
+        Qevent = new Event[2*(n-1)];
+        for(int i = 0; i<Qevent.length; i++) {
+            Qevent[i] = new Event(true, 0, 0, 0);
+        }
+        QeventSize = 0;
         list = new TIntArrayList();
 
         size = Arrays.stream(y).mapToInt(IntVar::getDomainSize).max().getAsInt();
@@ -109,31 +113,23 @@ public class PropSweepDiffN extends Propagator<IntVar> {
     }
 
     private boolean prop(int i, boolean lb) throws ContradictionException {
-        boolean checkIfInForbiddenRegions = false;
-        int value = (lb ? x[i].getLB() : x[i].getUB());
-        int witness = (lb ? witnessesLB[i].get() : witnessesUB[i].get());
-        for(int j = 0; j<n && !checkIfInForbiddenRegions; j++) {
-            checkIfInForbiddenRegions = checkIfInForbiddenRegions(i, j, value, witness);
+        if(lb) {
+            findMinimum(i);
+        } else {
+            findMaximum(i);
         }
-        if(checkIfInForbiddenRegions) {
-            if(lb) {
-                findMinimum(i);
-            } else {
-                findMaximum(i);
-            }
-            if(!find) {
-                fails();
-            } else {
-                if(lb) {
-                    witnessesLB[i].set(xWit);
-                    return x[i].updateLowerBound(xFind, this);
-                } else {
-                    witnessesUB[i].set(xWit);
-                    return x[i].updateUpperBound(xFind, this);
-                }
-            }
+
+        if(!find) {
+            fails();
         }
-        return false;
+
+        if(lb) {
+            witnessesLB[i].set(xWit);
+            return x[i].updateLowerBound(xFind, this);
+        } else {
+            witnessesUB[i].set(xWit);
+            return x[i].updateUpperBound(xFind, this);
+        }
     }
 
     private boolean doOverlap(int i, int j, boolean hori) {
@@ -153,8 +149,28 @@ public class PropSweepDiffN extends Propagator<IntVar> {
             hasFiltered = false;
             for(int i = 0; i<n; i++) {
                 if(targetSourceStatus[i].get() == 2) {
-                    hasFiltered |= prop(i, true);
-                    hasFiltered |= prop(i, false);
+                    boolean checkIfInForbiddenRegionsLB = false;
+                    boolean checkIfInForbiddenRegionsUB = false;
+                    for(int j = 0; j<n && !(checkIfInForbiddenRegionsLB && checkIfInForbiddenRegionsUB); j++) {
+                        if(i == j) {
+                            continue;
+                        }
+//                        int rx_m = x[j].getUB()-dx[i].getLB()+1;
+//                        int rx_p = x[j].getLB()+dx[j].getLB()-1;
+//                        int ry_m = y[j].getUB()-dy[i].getLB()+1;
+//                        int ry_p = y[j].getLB()+dy[j].getLB()-1;
+//                        System.out.println((x[i].getName().contains("x") ? "X" : "Y")+"-check : R["+i+":"+j+"] = ("+rx_m+".."+rx_p+","+ry_m+".."+ry_p+")");
+                        checkIfInForbiddenRegionsLB |= checkIfInForbiddenRegions(i, j, x[i].getLB(), witnessesLB[i].get());
+                        checkIfInForbiddenRegionsUB |= checkIfInForbiddenRegions(i, j, x[i].getUB(), witnessesUB[i].get());
+                    }
+                    if(checkIfInForbiddenRegionsLB) {
+//                        System.out.println(x[i]+":LB");
+                        hasFiltered |= prop(i, true);
+                    }
+                    if(checkIfInForbiddenRegionsUB) {
+//                        System.out.println(x[i]+":UB");
+                        hasFiltered |= prop(i, false);
+                    }
                 }
                 if(boxInstantiated(i)) {
                     for(int j = i+1; j<n; j++) {
@@ -198,15 +214,14 @@ public class PropSweepDiffN extends Propagator<IntVar> {
         }
     }
 
-    private boolean getForbiddenRegion(int i, int j, int xPrime, boolean down) {
+    private boolean isValidForbiddenRegion(int i, int j) {
         int rx_m = x[j].getUB()-dx[i].getLB()+1;
         int rx_p = x[j].getLB()+dx[j].getLB()-1;
         int ry_m = y[j].getUB()-dy[i].getLB()+1;
         int ry_p = y[j].getLB()+dy[j].getLB()-1;
-        boolean test = (down ? xPrime < x[i].getLB() : xPrime > x[i].getUB());
 //        System.out.println("R["+i+":"+j+"] = ("+rx_m+".."+rx_p+","+ry_m+".."+ry_p+")");
 
-        return test && rx_m <= rx_p && ry_m <= ry_p;
+        return rx_m <= rx_p && ry_m <= ry_p;
     }
 
     private boolean checkIfInForbiddenRegions(int i, int j, int vx, int vy) {
@@ -240,29 +255,37 @@ public class PropSweepDiffN extends Propagator<IntVar> {
         }
     }
 
+    private static void updateEvent(Event event, boolean start, int pos, int i, int j) {
+        event.start = start;
+        event.pos = pos;
+        event.i = i;
+        event.j = j;
+    }
+
     private void findMinimum(int i) {
-        Qevent.clear();
+        QeventSize = 0;
         for(int j = 0; j<n; j++) {
             if(j != i && targetSourceStatus[j].get() >= 1) {
-                if(getForbiddenRegion(i, j, x[i].getLB()-1, true)) {
-                    Qevent.add(new Event(true, Math.max(x[j].getUB() - dx[i].getLB() + 1, x[i].getLB()), i, j));
+                if(isValidForbiddenRegion(i, j)) {
+                    updateEvent(Qevent[QeventSize++], true, Math.max(x[j].getUB() - dx[i].getLB() + 1, x[i].getLB()), i, j);
                     if(x[j].getLB()+dx[j].getLB() <= x[i].getUB()) {
-                        Qevent.add(new Event(false, x[j].getLB() + dx[j].getLB(), i, j));
+                        updateEvent(Qevent[QeventSize++], false, x[j].getLB() + dx[j].getLB(), i, j);
                     }
                 }
             }
         }
-        Qevent.sort(Comparator.comparingInt(e -> e.pos));
-        if(Qevent.isEmpty() || Qevent.getFirst().pos > x[i].getLB()) {
+        Arrays.sort(Qevent, 0, QeventSize);
+        if(QeventSize == 0 || Qevent[0].pos > x[i].getLB()) {
             xFind = x[i].getLB();
             xWit = getRandValue(y[i]);
             find = true;
         } else {
             buildPStatus(i);
-            while(!Qevent.isEmpty()) {
-                int delta = Qevent.getFirst().pos;
-                while(!Qevent.isEmpty() && Qevent.getFirst().pos == delta) {
-                    handleEvent(Qevent.removeFirst());
+            int idx = 0;
+            while(idx < QeventSize) {
+                int delta = Qevent[idx].pos;
+                while(idx < QeventSize && Qevent[idx].pos == delta) {
+                    handleEvent(Qevent[idx++]);
                 }
                 list.clear();
                 for(int k = 0; k<size; k++) {
@@ -285,28 +308,29 @@ public class PropSweepDiffN extends Propagator<IntVar> {
     }
 
     private void findMaximum(int i) {
-        Qevent.clear();
+        QeventSize = 0;
         for(int j = 0; j<n; j++) {
             if(j != i && targetSourceStatus[j].get() >= 1) {
-                if(getForbiddenRegion(i, j, x[i].getUB()+1, false)) {
-                    Qevent.add(new Event(true, Math.min(x[j].getLB() + dx[j].getLB() - 1, x[i].getUB()), i, j));
+                if(isValidForbiddenRegion(i, j)) {
+                    updateEvent(Qevent[QeventSize++], true, Math.min(x[j].getLB() + dx[j].getLB() - 1, x[i].getUB()), i, j);
                     if(x[j].getUB()-dx[i].getLB() >= x[i].getLB()) {
-                        Qevent.add(new Event(false, x[j].getUB()-dx[i].getLB(), i, j));
+                        updateEvent(Qevent[QeventSize++], false, x[j].getUB()-dx[i].getLB(), i, j);
                     }
                 }
             }
         }
-        Qevent.sort(Comparator.comparingInt(e -> e.pos));
-        if(Qevent.isEmpty() || Qevent.getLast().pos < x[i].getUB()) {
+        Arrays.sort(Qevent, 0, QeventSize);
+        if(QeventSize == 0 || Qevent[QeventSize-1].pos < x[i].getUB()) {
             xFind = x[i].getUB();
             xWit = getRandValue(y[i]);
             find = true;
         } else {
             buildPStatus(i);
-            while(!Qevent.isEmpty()) {
-                int delta = Qevent.getLast().pos;
-                while(!Qevent.isEmpty() && Qevent.getLast().pos == delta) {
-                    handleEvent(Qevent.removeLast());
+            int idx = QeventSize-1;
+            while(idx >= 0) {
+                int delta = Qevent[idx].pos;
+                while(idx >= 0 && Qevent[idx].pos == delta) {
+                    handleEvent(Qevent[idx--]);
                 }
                 list.clear();
                 for(int k = 0; k<size; k++) {
@@ -342,11 +366,11 @@ public class PropSweepDiffN extends Propagator<IntVar> {
     // EVENT
     //***********************************************************************************
 
-    private static class Event {
-        public final boolean start;
-        public final int pos;
-        public final int i;
-        public final int j;
+    private static class Event implements Comparable<Event> {
+        public boolean start;
+        public int pos;
+        public int i;
+        public int j;
 
         Event(boolean start, int pos, int i, int j) {
             this.start = start;
@@ -358,6 +382,11 @@ public class PropSweepDiffN extends Propagator<IntVar> {
         @Override
         public String toString() {
             return "Event("+start+","+pos+","+i+","+j+")";
+        }
+
+        @Override
+        public int compareTo(Event o) {
+            return Integer.compare(this.pos, o.pos);
         }
     }
 
