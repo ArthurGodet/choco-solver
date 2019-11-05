@@ -10,6 +10,7 @@
 package org.chocosolver.solver.constraints.nary;
 
 import gnu.trove.list.array.TIntArrayList;
+import java.util.Arrays;
 import java.util.Comparator;
 import java.util.LinkedList;
 import java.util.Random;
@@ -51,6 +52,7 @@ public class PropSweepDiffN extends Propagator<IntVar> {
     private Random rand;
     private LinkedList<Event> Qevent;
     private int[] Pstatus;
+    private int size;
     private TIntArrayList list;
 
     //***********************************************************************************
@@ -86,6 +88,9 @@ public class PropSweepDiffN extends Propagator<IntVar> {
         this.rand = new Random(0);
         Qevent = new LinkedList<>();
         list = new TIntArrayList();
+
+        size = Arrays.stream(y).mapToInt(IntVar::getDomainSize).max().getAsInt();
+        Pstatus = new int[size];
     }
 
     //***********************************************************************************
@@ -225,10 +230,12 @@ public class PropSweepDiffN extends Propagator<IntVar> {
     }
 
     private void buildPStatus(int i) {
-        Pstatus = new int[y[i].getUB()-y[i].getLB()+1];
-        for(int k = 0; k<Pstatus.length; k++) {
+        size = y[i].getUB()-y[i].getLB()+1;
+        for(int k = 0; k<size; k++) {
             if(!y[i].contains(y[i].getLB()+k)) {
-                Pstatus[k]++;
+                Pstatus[k] = 1;
+            } else {
+                Pstatus[k] = 0;
             }
         }
     }
@@ -246,7 +253,6 @@ public class PropSweepDiffN extends Propagator<IntVar> {
             }
         }
         Qevent.sort(Comparator.comparingInt(e -> e.pos));
-        System.out.println(Qevent);
         if(Qevent.isEmpty() || Qevent.getFirst().pos > x[i].getLB()) {
             xFind = x[i].getLB();
             xWit = getRandValue(y[i]);
@@ -259,7 +265,7 @@ public class PropSweepDiffN extends Propagator<IntVar> {
                     handleEvent(Qevent.removeFirst());
                 }
                 list.clear();
-                for(int k = 0; k<Pstatus.length; k++) {
+                for(int k = 0; k<size; k++) {
                     if(Pstatus[k] == 0) {
                         list.add(y[i].getLB()+k);
                     }
@@ -303,7 +309,7 @@ public class PropSweepDiffN extends Propagator<IntVar> {
                     handleEvent(Qevent.removeLast());
                 }
                 list.clear();
-                for(int k = 0; k<Pstatus.length; k++) {
+                for(int k = 0; k<size; k++) {
                     if(Pstatus[k] == 0) {
                         list.add(y[i].getLB()+k);
                     }
@@ -327,14 +333,8 @@ public class PropSweepDiffN extends Propagator<IntVar> {
         int j = event.j;
         int l = Math.max(y[j].getUB()-dy[i].getLB()+1, y[i].getLB());
         int u = Math.min(y[j].getLB()+dy[j].getLB()-1, y[i].getUB());
-        if(event.start) {
-            for(int k = l; k<=u; k++) {
-                Pstatus[k-y[i].getLB()]++;
-            }
-        } else {
-            for(int k = l; k<=u; k++) {
-                Pstatus[k-y[i].getLB()]--;
-            }
+        for(int k = l; k<=u; k++) {
+            Pstatus[k-y[i].getLB()] += (event.start ? 1 : -1);
         }
     }
 
