@@ -4,6 +4,8 @@
 */
 package org.chocosolver.solver.constraints.nary;
 
+import java.util.Arrays;
+import java.util.Random;
 import org.chocosolver.solver.Model;
 import org.chocosolver.solver.constraints.Constraint;
 import org.chocosolver.solver.constraints.Propagator;
@@ -11,9 +13,6 @@ import org.chocosolver.solver.exception.ContradictionException;
 import org.chocosolver.solver.search.strategy.Search;
 import org.chocosolver.solver.variables.IntVar;
 import org.chocosolver.util.tools.ArrayUtils;
-
-import java.util.Arrays;
-import java.util.Random;
 
 public class Tmp {
 
@@ -68,31 +67,11 @@ public class Tmp {
         } else if(chocoModel == 1) {
             model.post(new Constraint("DIFFN", new PropDiffNImproved(x, y, dx, dy, false)));
         } else {
-            Propagator prop = new PropagDiffN(x, y, dx, dy, false);
-            Propagator prop2 = new PropagDiffN(x, y, dx, dy, false);
-            Propagator propInv = new PropagDiffN(y, x, dy, dx, false);
-            Propagator propInv2 = new PropagDiffN(y, x, dy, dx, false);
-            int xOffset = x[0].getUB()+dx[0].getValue();
-            int yOffset = y[0].getUB()+dy[0].getValue();
-            for(int i = 1; i<n; i++) {
-                xOffset = Math.max(xOffset, x[i].getUB()+(dx[i].getValue()-1));
-                yOffset = Math.max(yOffset, y[i].getUB()+(dy[i].getValue()-1));
-            }
-            IntVar[] oppX = new IntVar[n];
-            IntVar[] oppY = new IntVar[n];
-            for(int i = 0; i<n; i++) {
-                oppX[i] = model.intOffsetView(model.intMinusView(x[i]), 1-dx[i].getValue()+xOffset);
-                oppY[i] = model.intOffsetView(model.intMinusView(y[i]), 1-dy[i].getValue()+yOffset);
-            }
-            Propagator propOpp = new PropagDiffN(oppX, oppY, dx, dy, false); // TODO : is correct ???
-            Propagator propOpp2 = new PropagDiffN(oppX, oppY, dx, dy, false); // TODO : is correct ???
-            Propagator propOppInv = new PropagDiffN(oppY, oppX, dy, dx, false); // TODO : is correct ???
-            Propagator propOppInv2 = new PropagDiffN(oppY, oppX, dy, dx, false); // TODO : is correct ???
-            model.post(new Constraint("DIFFN", prop, prop2
-                    ,propOpp, propOpp2
-                    ,propInv, propInv2
-                    ,propOppInv, propOppInv2
-            ));
+            Propagator prop = new PropSweepDiffN(x, y, dx, dy, false);
+            Propagator prop2 = new PropSweepDiffN(x, y, dx, dy, false);
+            Propagator propInv = new PropSweepDiffN(y, x, dy, dx, false);
+            Propagator propInv2 = new PropSweepDiffN(y, x, dy, dx, false);
+            model.post(new Constraint("DIFFN", prop, prop2, propInv, propInv2));
         }
         model.getSolver().setSearch(Search.inputOrderLBSearch(ArrayUtils.append(x,y)));
         return model;
@@ -100,8 +79,11 @@ public class Tmp {
 
     public static boolean sameNumberOfSolutions(int[][] instance, boolean verbose) {
         Model chocoModel = model(instance, 0);
+//        chocoModel.getSolver().showSolutions();
         Model chocoImprovedModel = model(instance, 1);
+//        chocoImprovedModel.getSolver().showSolutions();
         Model diffnModel = model(instance, 2);
+//        diffnModel.getSolver().showSolutions();
 
         while(chocoModel.getSolver().solve()) {}
         if(verbose) {
@@ -126,19 +108,18 @@ public class Tmp {
         } else {
             System.out.println("chocoImprovedModel finished in "+(chocoImprovedModel.getSolver().getTimeCountInNanoSeconds()/1000000)+" ms !");
         }
-        return chocoModel.getSolver().getSolutionCount() == chocoImprovedModel.getSolver().getSolutionCount();
-//        while(diffnModel.getSolver().solve()) {}
-//        if(verbose) {
-//            System.out.println("DiffN model");
-//            System.out.println(diffnModel.getSolver().getSolutionCount()+";"
-//                    + diffnModel.getSolver().getTimeCountInNanoSeconds()/1000000+";"
-//                    + diffnModel.getSolver().getNodeCount()+";"
-//                    + diffnModel.getSolver().getFailCount());
-//            System.out.println("----------------");
-//        } else {
-//            System.out.println("diffnModel finished in "+(diffnModel.getSolver().getTimeCountInNanoSeconds()/1000000)+" ms !");
-//        }
-//        return chocoModel.getSolver().getSolutionCount() == diffnModel.getSolver().getSolutionCount();
+        while(diffnModel.getSolver().solve()) {}
+        if(verbose) {
+            System.out.println("DiffN model");
+            System.out.println(diffnModel.getSolver().getSolutionCount()+";"
+                    + diffnModel.getSolver().getTimeCountInNanoSeconds()/1000000+";"
+                    + diffnModel.getSolver().getNodeCount()+";"
+                    + diffnModel.getSolver().getFailCount());
+            System.out.println("----------------");
+        } else {
+            System.out.println("diffnModel finished in "+(diffnModel.getSolver().getTimeCountInNanoSeconds()/1000000)+" ms !");
+        }
+        return chocoModel.getSolver().getSolutionCount() == diffnModel.getSolver().getSolutionCount() && chocoModel.getSolver().getSolutionCount() == chocoImprovedModel.getSolver().getSolutionCount();
     }
 
     public static void main(String[] args) throws ContradictionException {
@@ -161,16 +142,16 @@ public class Tmp {
 //        x[3].instantiateTo(3, Cause.Null);
 //        y[3].instantiateTo(0, Cause.Null);
 
-        System.out.println(sameNumberOfSolutions(instance, true));
+        boolean ok = sameNumberOfSolutions(instance, true);
+        System.out.println(ok);
         System.out.println("----------------------------------------------------------------");
 
-        boolean ok;
-        do {
+        while(ok) {
             int[][] inst = createInstance();
             System.out.println("size : "+(inst.length-1));
             ok = sameNumberOfSolutions(inst, true);
             System.out.println(ok);
             System.out.println("----------------------------------------------------------------");
-        } while(ok);
+        }
     }
 }

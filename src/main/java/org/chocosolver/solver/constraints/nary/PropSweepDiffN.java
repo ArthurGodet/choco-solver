@@ -10,6 +10,9 @@
 package org.chocosolver.solver.constraints.nary;
 
 import gnu.trove.list.array.TIntArrayList;
+import java.util.Comparator;
+import java.util.LinkedList;
+import java.util.Random;
 import org.chocosolver.memory.IStateInt;
 import org.chocosolver.solver.constraints.Propagator;
 import org.chocosolver.solver.constraints.PropagatorPriority;
@@ -20,15 +23,11 @@ import org.chocosolver.solver.variables.events.IntEventType;
 import org.chocosolver.util.ESat;
 import org.chocosolver.util.tools.ArrayUtils;
 
-import java.util.Comparator;
-import java.util.LinkedList;
-import java.util.Random;
-
 /**
  @author Arthur Godet <arth.godet@gmail.com>
  @since 14/10/2019
  */
-public class PropagDiffN extends Propagator<IntVar> {
+public class PropSweepDiffN extends Propagator<IntVar> {
 
     //***********************************************************************************
     // VARIABLES
@@ -42,8 +41,9 @@ public class PropagDiffN extends Propagator<IntVar> {
 
     private boolean fast;
 
-    private IStateInt[] witnesses;
-    private boolean findMin;
+    private IStateInt[] witnessesLB; // TODO : may not be necessary to be trailed
+    private IStateInt[] witnessesUB; // TODO : may not be necessary to be trailed
+    private boolean find;
     private int xFind;
     private int xWit;
     private Random rand;
@@ -55,7 +55,7 @@ public class PropagDiffN extends Propagator<IntVar> {
     // CONSTRUCTOR
     //***********************************************************************************
 
-    public PropagDiffN(IntVar[] x, IntVar[] y, IntVar[] dx, IntVar[] dy, boolean fast) {
+    public PropSweepDiffN(IntVar[] x, IntVar[] y, IntVar[] dx, IntVar[] dy, boolean fast) {
         super(ArrayUtils.append(x, y, dx, dy), PropagatorPriority.LINEAR, false);
         this.fast = fast;
         n = x.length;
@@ -68,13 +68,15 @@ public class PropagDiffN extends Propagator<IntVar> {
         }
         for(int i = 0; i<n; i++) { // TODO : temporary
             if(!dx[i].isInstantiated() || !dy[i].isInstantiated()) {
-                throw new SolverException("PropDiffN only accepts instantiated width and height");
+                throw new SolverException("PropagDiffN only accepts instantiated width and height");
             }
         }
 
-        this.witnesses = new IStateInt[n];
+        this.witnessesLB = new IStateInt[n];
+        this.witnessesUB = new IStateInt[n];
         for(int i = 0; i<n; i++) {
-            witnesses[i] = this.getModel().getEnvironment().makeInt(y[i].getLB());
+            witnessesLB[i] = this.getModel().getEnvironment().makeInt(y[i].getLB());
+            witnessesUB[i] = this.getModel().getEnvironment().makeInt(y[i].getLB());
         }
 
         this.rand = new Random(0);
@@ -88,50 +90,65 @@ public class PropagDiffN extends Propagator<IntVar> {
 
     @Override
     public int getPropagationConditions(int idx) {
-        if (fast) {
-            return IntEventType.instantiation();
+        if(idx < n) {
+            if (fast) {
+                return IntEventType.instantiation();
+            }
+            return IntEventType.combine(IntEventType.INCLOW, IntEventType.INSTANTIATE);
         }
-        return IntEventType.boundAndInst();
+        return IntEventType.VOID.getMask();
     }
 
-    @Override
-    public void propagate(int varIdx, int mask) throws ContradictionException {
-        // TODO
+    private void prop(int i, boolean lb) throws ContradictionException {
+        boolean checkIfInForbiddenRegions = false;
+        int value = (lb ? x[i].getLB() : x[i].getUB());
+        int witness = (lb ? witnessesLB[i].get() : witnessesUB[i].get());
+        for(int j = 0; j<n && !checkIfInForbiddenRegions; j++) {
+            checkIfInForbiddenRegions = checkIfInForbiddenRegions(i, j, value, witness);
+        }
+        if(checkIfInForbiddenRegions) {
+            if(lb) {
+                findMinimum(i);
+            } else {
+                findMaximum(i);
+            }
+            if(!find) {
+                fails();
+            } else {
+                if(lb) {
+                    witnessesLB[i].set(xWit);
+                    x[i].updateLowerBound(xFind, this);
+                } else {
+                    witnessesUB[i].set(xWit);
+                    x[i].updateUpperBound(xFind, this);
+                }
+            }
+        }
     }
 
     @Override
     public void propagate(int evtmask) throws ContradictionException {
         for(int i = 0; i<n; i++) {
             if(!x[i].isInstantiated()) {
-                boolean checkIfInForbiddenRegions = false;
-                for(int j = 0; j<n && !checkIfInForbiddenRegions; j++) {
-                    checkIfInForbiddenRegions |= checkIfInForbiddenRegions(i, j, x[i].getLB(), witnesses[i].get());
-                }
-                if(checkIfInForbiddenRegions) {
-                    findMinimum(i);
-                    witnesses[i].set(xWit);
-                    if(!findMin) {
-                        fails();
-                    } else if(xFind != x[i].getLB()) {
-                        x[i].updateLowerBound(xFind, this);
-                    }
-                }
+                prop(i, true);
+                prop(i, false);
             }
         }
-        if(isCompletelyInstantiated()) {
+        if(isCompletelyInstantiated()) { // TODO : should not be useful ! We need to understand why is it not ok --> because of the if on x[i].isInstantiated()
             if(isEntailed().equals(ESat.FALSE)) {
                 fails();
             }
         }
     }
 
-    private boolean getForbiddenRegion(int i, int j, int xPrime) {
+    private boolean getForbiddenRegion(int i, int j, int xPrime, boolean down) {
         int rx_m = x[j].getUB()-dx[i].getLB()+1;
         int rx_p = x[j].getLB()+dx[j].getLB()-1;
         int ry_m = y[j].getUB()-dy[i].getLB()+1;
         int ry_p = y[j].getLB()+dy[j].getLB()-1;
+        boolean test = (down ? xPrime < x[i].getLB() : xPrime > x[i].getUB());
 
-        return xPrime < x[i].getLB() && rx_m <= rx_p && ry_m <= ry_p;
+        return test && rx_m <= rx_p && ry_m <= ry_p;
     }
 
     private boolean checkIfInForbiddenRegions(int i, int j, int vx, int vy) {
@@ -142,6 +159,9 @@ public class PropagDiffN extends Propagator<IntVar> {
 
         return rx_m <= vx && vx <= rx_p && ry_m <= vy && vy <= ry_p;
     }
+
+    // TODO : et finir de débugger ce propagateur pour que tout fonctionne correctement
+    // TODO : COMPRENDRE POURQUOI LE SWEEP FILTRE MOINS BIEN QUE L'EXISTANT ALORS QUE JACOP LAISSE SUPPOSER LE CONTRAIRE
 
     private int getRandValue(IntVar y) {
         int idx = rand.nextInt(y.getDomainSize());
@@ -154,11 +174,20 @@ public class PropagDiffN extends Propagator<IntVar> {
         return value;
     }
 
+    private void buildPStatus(int i) {
+        Pstatus = new int[y[i].getUB()-y[i].getLB()+1];
+        for(int k = 0; k<Pstatus.length; k++) {
+            if(!y[i].contains(y[i].getLB()+k)) {
+                Pstatus[k]++;
+            }
+        }
+    }
+
     private void findMinimum(int i) {
         Qevent.clear();
         for(int j = 0; j<n; j++) {
             if(j != i) {
-                if(getForbiddenRegion(i, j, x[i].getLB()-1)) {
+                if(getForbiddenRegion(i, j, x[i].getLB()-1, true)) {
                     Qevent.add(new Event(true, Math.max(x[j].getUB() - dx[i].getLB() + 1, x[i].getLB()), i, j));
                     if(x[j].getLB()+dx[j].getLB() <= x[i].getUB()) {
                         Qevent.add(new Event(false, x[j].getLB() + dx[j].getLB(), i, j));
@@ -170,34 +199,73 @@ public class PropagDiffN extends Propagator<IntVar> {
         if(Qevent.isEmpty() || Qevent.getFirst().pos > x[i].getLB()) {
             xFind = x[i].getLB();
             xWit = getRandValue(y[i]);
-            findMin = true;
+            find = true;
         } else {
-            Pstatus = new int[y[i].getUB()-y[i].getLB()+1];
-            for(int k = 0; k<Pstatus.length; k++) {
-                if(!y[i].contains(y[i].getLB()+k)) {
-                    Pstatus[k]++;
-                }
-            }
+            buildPStatus(i);
             while(!Qevent.isEmpty()) {
                 int delta = Qevent.getFirst().pos;
                 while(!Qevent.isEmpty() && Qevent.getFirst().pos == delta) {
                     handleEvent(Qevent.removeFirst());
                 }
+                list.clear();
                 for(int k = 0; k<Pstatus.length; k++) {
                     if(Pstatus[k] == 0) {
                         list.add(y[i].getLB()+k);
                     }
                 }
                 if(!list.isEmpty()) {
-                    findMin = true;
+                    find = true;
                     xFind = delta;
                     xWit = list.getQuick(rand.nextInt(list.size()));
                     return;
                 }
-                Qevent.sort(Comparator.comparingInt(e -> e.pos));
             }
 
-            findMin = false;
+            find = false;
+            xFind = 0;
+            xWit = 0;
+        }
+    }
+
+    private void findMaximum(int i) {
+        Qevent.clear();
+        for(int j = 0; j<n; j++) {
+            if(j != i) {
+                if(getForbiddenRegion(i, j, x[i].getUB()+1, false)) {
+                    Qevent.add(new Event(true, Math.min(x[j].getLB() + dx[j].getLB() - 1, x[i].getUB()), i, j));
+                    if(x[j].getUB()-dx[i].getLB() >= x[i].getLB()) {
+                        Qevent.add(new Event(false, x[j].getUB()-dx[i].getLB(), i, j));
+                    }
+                }
+            }
+        }
+        Qevent.sort(Comparator.comparingInt(e -> e.pos));
+        if(Qevent.isEmpty() || Qevent.getLast().pos < x[i].getUB()) {
+            xFind = x[i].getUB();
+            xWit = getRandValue(y[i]);
+            find = true;
+        } else {
+            buildPStatus(i);
+            while(!Qevent.isEmpty()) {
+                int delta = Qevent.getLast().pos;
+                while(!Qevent.isEmpty() && Qevent.getLast().pos == delta) {
+                    handleEvent(Qevent.removeLast());
+                }
+                list.clear();
+                for(int k = 0; k<Pstatus.length; k++) {
+                    if(Pstatus[k] == 0) {
+                        list.add(y[i].getLB()+k);
+                    }
+                }
+                if(!list.isEmpty()) {
+                    find = true;
+                    xFind = delta;
+                    xWit = list.getQuick(rand.nextInt(list.size()));
+                    return;
+                }
+            }
+
+            find = false;
             xFind = 0;
             xWit = 0;
         }
@@ -211,22 +279,6 @@ public class PropagDiffN extends Propagator<IntVar> {
         if(event.start) {
             for(int k = l; k<=u; k++) {
                 Pstatus[k-y[i].getLB()]++;
-            }
-            if(Qevent.stream().noneMatch(e -> e.i==i && e.j==j)) {
-                if(getForbiddenRegion(i, j, x[j].getUB()-dx[i].getLB()+1)) {
-                    int p = x[j].getUB()-dx[i].getLB()+1;
-                    if(p != event.pos) {
-                        if(Qevent.isEmpty() || p == Qevent.getFirst().pos) {
-                            Qevent.addFirst(new Event(true, p, i, j));
-                        } else {
-                            Qevent.addLast(new Event(true, p, i, j));
-                        }
-                    }
-
-                    if(x[j].getLB()+dx[j].getLB() <= x[i].getUB()) {
-                        Qevent.addLast(new Event(false, x[j].getLB() + dx[j].getLB(), i, j));
-                    }
-                }
             }
         } else {
             for(int k = l; k<=u; k++) {
@@ -259,12 +311,12 @@ public class PropagDiffN extends Propagator<IntVar> {
     }
 
     //***********************************************************************************
-    // IS ENTAILED METHODS
+    // EXISTENT METHODS
     //***********************************************************************************
 
     private boolean boxInstantiated(int i) {
         return x[i].isInstantiated() && y[i].isInstantiated()
-                && dx[i].isInstantiated() && dy[i].isInstantiated();
+            && dx[i].isInstantiated() && dy[i].isInstantiated();
     }
 
     private boolean mayOverlap(int i, int j) {
@@ -273,11 +325,9 @@ public class PropagDiffN extends Propagator<IntVar> {
 
     private boolean isNotDisjoint(int i, int j, boolean horizontal) {
         if(horizontal) {
-            return (x[i].getLB() < x[j].getUB() + dx[j].getUB())
-                    && (x[j].getLB() < x[i].getUB() + dx[i].getUB());
+            return (x[i].getLB() < x[j].getUB() + dx[j].getUB()) && (x[j].getLB() < x[i].getUB() + dx[i].getUB());
         } else {
-            return (y[i].getLB() < y[j].getUB() + dy[j].getUB())
-                    && (y[j].getLB() < y[i].getUB() + dy[i].getUB());
+            return (y[i].getLB() < y[j].getUB() + dy[j].getUB()) && (y[j].getLB() < y[i].getUB() + dy[i].getUB());
         }
     }
 
